@@ -277,21 +277,33 @@ public class HotkeyService : IDisposable
     //    // Обычные клавиши — используем TextEntry
     //    sim.Keyboard.TextEntry(c);
     //}
+    //private void TypeCharacter(char c)
+    //{
+    //    if (char.IsLetter(c))
+    //    {
+    //        sim.Keyboard.TextEntry(c);
+    //        return;
+    //    }
+
+    //    if (KeyMap.TryGetValue(c, out var mapped))
+    //    {
+    //        if (mapped.shift)
+    //            sim.Keyboard.ModifiedKeyStroke(VirtualKeyCode.SHIFT, mapped.key);
+    //        else
+    //            sim.Keyboard.KeyPress(mapped.key);
+
+    //        return;
+    //    }
+
+    //    sim.Keyboard.TextEntry(c);
+    //}
     private void TypeCharacter(char c)
     {
-        if (char.IsLetter(c))
+        // Вводим символ как Unicode-пакет, чтобы результат не зависел от текущей раскладки
+        // (RU/EN и т.д.) и точно соответствовал тексту из буфера обмена.
+        if (c == '\r' || c == '\n')
         {
-            sim.Keyboard.TextEntry(c);
-            return;
-        }
-
-        if (KeyMap.TryGetValue(c, out var mapped))
-        {
-            if (mapped.shift)
-                sim.Keyboard.ModifiedKeyStroke(VirtualKeyCode.SHIFT, mapped.key);
-            else
-                sim.Keyboard.KeyPress(mapped.key);
-
+            sim.Keyboard.KeyPress(VirtualKeyCode.RETURN);
             return;
         }
 
