@@ -226,13 +226,7 @@ public class HotkeyService : IDisposable
     {
         public int BaseDelayMs { get; set; }
         public double FatiguePerChar { get; set; }
-        public double MistakeGrowthPerChar { get; set; }
         public int BurstRemaining { get; set; }
-        public int BurstMin { get; set; }
-        public int BurstMax { get; set; }
-        public int BurstPauseMinMs { get; set; }
-        public int BurstPauseMaxMs { get; set; }
-        public double BurstSpeedMultiplier { get; set; }
         public double MistakeRate { get; set; }
     }
 
@@ -241,14 +235,11 @@ public class HotkeyService : IDisposable
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        text = text.Replace("\r\n", "\n").Replace('\r', '\n');
-
-        await Task.Delay(rnd.Next(120, 320), token); // быстрая реакция перед стартом
+        await Task.Delay(rnd.Next(180, 650), token); // реакция перед стартом
 
         int totalLength = text.Length;
         int typedCount = 0;
         char previous = '\0';
-        int newlineStreak = 0;
         var profile = BuildTypingProfile(totalLength);
 
         for (int i = 0; i < totalLength; i++)
@@ -257,7 +248,6 @@ public class HotkeyService : IDisposable
             char current = text[i];
             char next = i + 1 < totalLength ? text[i + 1] : '\0';
             char previousChar = previous;
-            newlineStreak = current == '\n' ? newlineStreak + 1 : 0;
 
             if (ShouldMakeMistake(current, previousChar, typedCount, totalLength, profile))
             {
@@ -267,12 +257,12 @@ public class HotkeyService : IDisposable
             TypeCharacter(current);
             typedCount++;
 
-            int delay = CalculateDelay(previousChar, current, next, typedCount, totalLength, newlineStreak, profile);
+            int delay = CalculateDelay(previousChar, current, next, typedCount, totalLength, profile);
             await Task.Delay(delay, token);
             previous = current;
 
-            if (NeedThinkingPause(current, next, newlineStreak))
-                await Task.Delay(rnd.Next(180, 700), token);
+            if (NeedThinkingPause(current, next))
+                await Task.Delay(rnd.Next(380, 1400), token);
         }
     }
 
@@ -344,74 +334,57 @@ public class HotkeyService : IDisposable
     {
         int baseDelay = length switch
         {
-            < 40 => rnd.Next(48, 80),
-            < 180 => rnd.Next(42, 72),
-            _ => rnd.Next(36, 65)
+            < 40 => rnd.Next(115, 170),
+            < 180 => rnd.Next(90, 145),
+            _ => rnd.Next(75, 130)
         };
 
         return new TypingProfile
         {
             BaseDelayMs = baseDelay,
-            FatiguePerChar = 0.02 + rnd.NextDouble() * 0.06,
-            MistakeGrowthPerChar = 0.006 + rnd.NextDouble() * 0.012,
-            MistakeRate = 0.035 + rnd.NextDouble() * 0.035,
-            BurstMin = 16,
-            BurstMax = 24,
-            BurstPauseMinMs = 320,
-            BurstPauseMaxMs = 1050,
-            BurstSpeedMultiplier = 0.78 + rnd.NextDouble() * 0.12,
-            BurstRemaining = rnd.Next(16, 25)
+            FatiguePerChar = rnd.NextDouble() * 0.08,
+            MistakeRate = 0.012 + rnd.NextDouble() * 0.02,
+            BurstRemaining = rnd.Next(7, 18)
         };
     }
 
-    private int CalculateDelay(char previous, char current, char next, int typedCount, int totalLength, int newlineStreak, TypingProfile profile)
+    private int CalculateDelay(char previous, char current, char next, int typedCount, int totalLength, TypingProfile profile)
     {
         double delay = profile.BaseDelayMs;
-        delay *= profile.BurstSpeedMultiplier; // рывковая серия быстрее обычного
-        delay *= 0.82 + rnd.NextDouble() * 0.24; // неровный микроритм
+        delay *= 0.88 + rnd.NextDouble() * 0.28; // микро-рывки
 
         if (WordSeparators.Contains(previous) && !WordSeparators.Contains(current))
-            delay += rnd.Next(10, 45);
+            delay += rnd.Next(15, 90);
 
         if (char.IsDigit(current))
-            delay += rnd.Next(12, 36);
+            delay += rnd.Next(20, 80);
 
         if (WordSeparators.Contains(current))
-            delay += rnd.Next(30, 80);
+            delay += rnd.Next(45, 130);
         else if (char.IsUpper(current))
-            delay += rnd.Next(8, 30);
+            delay += rnd.Next(12, 48);
 
         if (SoftPunctuation.Contains(current))
-            delay += rnd.Next(70, 170);
+            delay += rnd.Next(130, 260);
         if (SentencePunctuation.Contains(current))
-            delay += rnd.Next(100, 230);
+            delay += rnd.Next(220, 430);
         if (current == '\n' || current == '\r')
-        {
-            // Блоки пустых строк печатаем быстрее и не одинаково, иначе паттерн легко палится.
-            if (newlineStreak <= 1)
-                delay += rnd.Next(70, 170);
-            else if (newlineStreak <= 3)
-                delay += rnd.Next(35, 95);
-            else
-                delay += rnd.Next(15, 65);
-        }
+            delay += rnd.Next(280, 640);
 
         if (char.IsPunctuation(current) && char.IsPunctuation(next))
-            delay += rnd.Next(45, 120);
+            delay += rnd.Next(80, 180);
 
         double fatigue = 1 + (typedCount / (double)Math.Max(1, totalLength)) * profile.FatiguePerChar;
         delay *= fatigue;
 
-        // Явный паттерн "пачка символов -> заметное замирание"
         profile.BurstRemaining--;
         if (profile.BurstRemaining <= 0)
         {
-            delay += rnd.Next(profile.BurstPauseMinMs, profile.BurstPauseMaxMs);
-            profile.BurstRemaining = rnd.Next(profile.BurstMin, profile.BurstMax + 1);
-            profile.BurstSpeedMultiplier = 0.74 + rnd.NextDouble() * 0.14;
+            delay += rnd.Next(170, 520);
+            profile.BurstRemaining = rnd.Next(6, 21);
         }
 
-        delay += rnd.Next(-24, 31);
+        delay += rnd.Next(-35, 46);
         return (int)Math.Max(delay, 20);
     }
 
@@ -423,32 +396,24 @@ public class HotkeyService : IDisposable
         double chance = profile.MistakeRate;
 
         if (char.IsUpper(current))
-            chance += 0.01;
-        if (char.IsLetter(previous) && char.IsLetter(current))
             chance += 0.006;
-
-        double progress = typedCount / (double)Math.Max(1, totalLength);
-        chance += progress * profile.MistakeGrowthPerChar;
-
-        if (profile.BurstRemaining <= 3)
-            chance += 0.012; // под конец рывка чаще мажем
+        if (char.IsLetter(previous) && char.IsLetter(current))
+            chance += 0.003;
+        if (typedCount > totalLength * 0.7)
+            chance += 0.005; // лёгкая усталость
 
         return rnd.NextDouble() < chance;
     }
 
-    private bool NeedThinkingPause(char current, char next, int newlineStreak)
+    private bool NeedThinkingPause(char current, char next)
     {
         if (SentencePunctuation.Contains(current) && !WordSeparators.Contains(next))
-            return rnd.NextDouble() < 0.07;
+            return rnd.NextDouble() < 0.12;
 
         if (current == '\n')
-        {
-            if (newlineStreak <= 1)
-                return rnd.NextDouble() < 0.04;
-            return false; // в серии переносов не "задумываемся"
-        }
+            return rnd.NextDouble() < 0.2;
 
-        return rnd.NextDouble() < 0.004;
+        return rnd.NextDouble() < 0.008;
     }
 
     private async Task TypeMistake(char correct, CancellationToken token)
@@ -463,7 +428,7 @@ public class HotkeyService : IDisposable
         sim.Keyboard.KeyPress(VirtualKeyCode.BACK);
         await Task.Delay(rnd.Next(70, 170), token);
 
-        if (rnd.NextDouble() < 0.18)
+        if (rnd.NextDouble() < 0.08)
         {
             char secondWrong = GetNeighborKey(correct);
             if (secondWrong != correct)
