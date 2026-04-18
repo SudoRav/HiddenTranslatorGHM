@@ -136,6 +136,9 @@ public class HotkeyService : IDisposable
 
     private readonly InputSimulator sim = new();
     private static readonly Random rnd = new();
+    private static readonly HashSet<char> SentencePunctuation = ['.', '!', '?'];
+    private static readonly HashSet<char> SoftPunctuation = [',', ';', ':', ')', '(', '—', '-'];
+    private static readonly HashSet<char> WordSeparators = [' ', '\t', '\n', '\r'];
 
     // --- Карта соседних клавиш (QWERTY) ---
     private static readonly Dictionary<char, string> NeighborKeys = new()
@@ -183,67 +186,83 @@ public class HotkeyService : IDisposable
         ['m'] = "nhjk,"
     };
 
-    // Таблица символов, требующих Shift (US-раскладка)
-    private static readonly Dictionary<char, (VirtualKeyCode key, bool shift)> KeyMap =
-        new()
-        {
-            ['!'] = (VirtualKeyCode.VK_1, true),
-            ['@'] = (VirtualKeyCode.VK_2, true),
-            ['#'] = (VirtualKeyCode.VK_3, true),
-            ['$'] = (VirtualKeyCode.VK_4, true),
-            ['%'] = (VirtualKeyCode.VK_5, true),
-            ['^'] = (VirtualKeyCode.VK_6, true),
-            ['&'] = (VirtualKeyCode.VK_7, true),
-            ['*'] = (VirtualKeyCode.VK_8, true),
-            ['('] = (VirtualKeyCode.VK_9, true),
-            [')'] = (VirtualKeyCode.VK_0, true),
-            ['_'] = (VirtualKeyCode.OEM_MINUS, true),
-            ['+'] = (VirtualKeyCode.OEM_PLUS, true),
+    private static readonly Dictionary<char, string> NeighborRuKeys = new()
+    {
+        ['й'] = "цф1",
+        ['ц'] = "йук2",
+        ['у'] = "цке3",
+        ['к'] = "уен4",
+        ['е'] = "кнг5",
+        ['н'] = "егш6",
+        ['г'] = "ншщ7",
+        ['ш'] = "гщз8",
+        ['щ'] = "шзх9",
+        ['з'] = "щхъ0",
+        ['х'] = "зъж",
+        ['ъ'] = "х",
+        ['ф'] = "ыйяч",
+        ['ы'] = "фвйчс",
+        ['в'] = "ыапуцм",
+        ['а'] = "впркмии",
+        ['п'] = "ароне",
+        ['р'] = "полгт",
+        ['о'] = "рлднщ",
+        ['л'] = "оджшб",
+        ['д'] = "лжэзбю",
+        ['ж'] = "дэхэ",
+        ['э'] = "жъ",
+        ['я'] = "чф",
+        ['ч'] = "ясыв",
+        ['с'] = "чмыв",
+        ['м'] = "ситьва",
+        ['и'] = "мтбап",
+        ['т'] = "иьбр",
+        ['ь'] = "тюлб",
+        ['б'] = "ьюдлт",
+        ['ю'] = "б.д"
+    };
 
-            ['{'] = (VirtualKeyCode.OEM_4, true),
-            ['}'] = (VirtualKeyCode.OEM_6, true),
-            ['|'] = (VirtualKeyCode.OEM_5, true),
-
-            [':'] = (VirtualKeyCode.OEM_1, true),
-            ['"'] = (VirtualKeyCode.OEM_7, true),
-            ['<'] = (VirtualKeyCode.OEM_COMMA, true),
-            ['>'] = (VirtualKeyCode.OEM_PERIOD, true),
-            ['?'] = (VirtualKeyCode.OEM_2, true)
-        };
+    private sealed class TypingProfile
+    {
+        public int BaseDelayMs { get; set; }
+        public double FatiguePerChar { get; set; }
+        public int BurstRemaining { get; set; }
+        public double MistakeRate { get; set; }
+    }
 
     public async Task SimulateTextInput(string text, CancellationToken token)
     {
-        await Task.Delay(rnd.Next(150, 300));
+        if (string.IsNullOrWhiteSpace(text))
+            return;
 
-        int length = text.Length;
+        await Task.Delay(rnd.Next(180, 650), token); // реакция перед стартом
 
-        int baseDelay = length switch
-        {
-            < 30 => rnd.Next(110, 160),
-            < 100 => rnd.Next(80, 130),
-            _ => rnd.Next(60, 110)
-        };
-
+        int totalLength = text.Length;
         int typedCount = 0;
+        char previous = '\0';
+        var profile = BuildTypingProfile(totalLength);
 
-        foreach (char c in text)
+        for (int i = 0; i < totalLength; i++)
         {
             token.ThrowIfCancellationRequested();
+            char current = text[i];
+            char next = i + 1 < totalLength ? text[i + 1] : '\0';
+            char previousChar = previous;
 
-            // Ошибка
-            if (ShouldMakeMistake(c))
-                await TypeMistake(c);
+            if (ShouldMakeMistake(current, previousChar, typedCount, totalLength, profile))
+            {
+                await TypeMistake(current, token);
+            }
 
-            // "Задумался"
-            if (rnd.NextDouble() < 0.01)
-                await Task.Delay(rnd.Next(600, 1200));
-
-            // Печать символа с учётом Shift
-            TypeCharacter(c);
+            TypeCharacter(current);
             typedCount++;
 
-            int delay = CalculateDelay(c, baseDelay, typedCount);
-            await Task.Delay(delay);
+            int delay = CalculateDelay(previousChar, current, next, typedCount, totalLength, profile);
+            await Task.Delay(delay, token);
+            previous = current;
+
+            if (NeedThinkingPause(current, next))
+                await Task.Delay(rnd.Next(380, 1400), token);
         }
     }
 
@@ -311,57 +330,135 @@ public class HotkeyService : IDisposable
     }
 
 
-    private int CalculateDelay(char c, int baseDelay, int typedCount)
+    private TypingProfile BuildTypingProfile(int length)
     {
-        double speedFactor = 1 + (rnd.NextDouble() * 0.08 - 0.04);
-        speedFactor = Clamp(speedFactor, 0.7, 1.3);
+        int baseDelay = length switch
+        {
+            < 40 => rnd.Next(115, 170),
+            < 180 => rnd.Next(90, 145),
+            _ => rnd.Next(75, 130)
+        };
 
-        int delay = (int)(baseDelay * speedFactor);
+        return new TypingProfile
+        {
+            BaseDelayMs = baseDelay,
+            FatiguePerChar = rnd.NextDouble() * 0.08,
+            MistakeRate = 0.012 + rnd.NextDouble() * 0.02,
+            BurstRemaining = rnd.Next(7, 18)
+        };
+    }
 
-        if (char.IsWhiteSpace(c))
+    private int CalculateDelay(char previous, char current, char next, int typedCount, int totalLength, TypingProfile profile)
+    {
+        double delay = profile.BaseDelayMs;
+        delay *= 0.88 + rnd.NextDouble() * 0.28; // микро-рывки
+
+        if (WordSeparators.Contains(previous) && !WordSeparators.Contains(current))
+            delay += rnd.Next(15, 90);
+
+        if (char.IsDigit(current))
+            delay += rnd.Next(20, 80);
+
+        if (WordSeparators.Contains(current))
+            delay += rnd.Next(45, 130);
+        else if (char.IsUpper(current))
+            delay += rnd.Next(12, 48);
+
+        if (SoftPunctuation.Contains(current))
+            delay += rnd.Next(130, 260);
+        if (SentencePunctuation.Contains(current))
+            delay += rnd.Next(220, 430);
+        if (current == '\n' || current == '\r')
+            delay += rnd.Next(280, 640);
+
+        if (char.IsPunctuation(current) && char.IsPunctuation(next))
             delay += rnd.Next(80, 180);
 
-        if (".,!?:;()\"'".Contains(c))
-            delay += rnd.Next(120, 260);
+        double fatigue = 1 + (typedCount / (double)Math.Max(1, totalLength)) * profile.FatiguePerChar;
+        delay *= fatigue;
 
-        delay += rnd.Next(-40, 40);
+        profile.BurstRemaining--;
+        if (profile.BurstRemaining <= 0)
+        {
+            delay += rnd.Next(170, 520);
+            profile.BurstRemaining = rnd.Next(6, 21);
+        }
 
-        if (typedCount % rnd.Next(10, 16) == 0)
-            delay += rnd.Next(150, 350);
-
-        return Math.Max(delay, 20);
+        delay += rnd.Next(-35, 46);
+        return (int)Math.Max(delay, 20);
     }
 
-    private bool ShouldMakeMistake(char c)
+    private bool ShouldMakeMistake(char current, char previous, int typedCount, int totalLength, TypingProfile profile)
     {
-        return char.IsLetter(c) && rnd.NextDouble() < 0.025;
+        if (!char.IsLetterOrDigit(current))
+            return false;
+
+        double chance = profile.MistakeRate;
+
+        if (char.IsUpper(current))
+            chance += 0.006;
+        if (char.IsLetter(previous) && char.IsLetter(current))
+            chance += 0.003;
+        if (typedCount > totalLength * 0.7)
+            chance += 0.005; // лёгкая усталость
+
+        return rnd.NextDouble() < chance;
     }
 
-    private async Task TypeMistake(char correct)
+    private bool NeedThinkingPause(char current, char next)
+    {
+        if (SentencePunctuation.Contains(current) && !WordSeparators.Contains(next))
+            return rnd.NextDouble() < 0.12;
+
+        if (current == '\n')
+            return rnd.NextDouble() < 0.2;
+
+        return rnd.NextDouble() < 0.008;
+    }
+
+    private async Task TypeMistake(char correct, CancellationToken token)
     {
         char wrong = GetNeighborKey(correct);
+        if (wrong == correct)
+            return;
 
         TypeCharacter(wrong);
-        await Task.Delay(rnd.Next(150, 250));
+        await Task.Delay(rnd.Next(85, 220), token);
 
         sim.Keyboard.KeyPress(VirtualKeyCode.BACK);
-        await Task.Delay(rnd.Next(120, 200));
+        await Task.Delay(rnd.Next(70, 170), token);
+
+        if (rnd.NextDouble() < 0.08)
+        {
+            char secondWrong = GetNeighborKey(correct);
+            if (secondWrong != correct)
+            {
+                TypeCharacter(secondWrong);
+                await Task.Delay(rnd.Next(70, 160), token);
+                sim.Keyboard.KeyPress(VirtualKeyCode.BACK);
+                await Task.Delay(rnd.Next(60, 140), token);
+            }
+        }
     }
 
     private char GetNeighborKey(char c)
     {
+        bool isUpper = char.IsUpper(c);
         char lower = char.ToLower(c);
+
+        if (NeighborRuKeys.TryGetValue(lower, out var ruNeighbors) && ruNeighbors.Length > 0)
+        {
+            char ruCandidate = ruNeighbors[rnd.Next(ruNeighbors.Length)];
+            return isUpper ? char.ToUpper(ruCandidate) : ruCandidate;
+        }
+
         if (NeighborKeys.TryGetValue(lower, out var neighbors))
-            return neighbors[rnd.Next(neighbors.Length)];
+        {
+            char candidate = neighbors[rnd.Next(neighbors.Length)];
+            return isUpper ? char.ToUpper(candidate) : candidate;
+        }
 
         return c;
-    }
-
-    private double Clamp(double value, double min, double max)
-    {
-        if (value < min) return min;
-        if (value > max) return max;
-        return value;
     }
 
     void TransferToDispalyA()
